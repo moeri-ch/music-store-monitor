@@ -25,6 +25,19 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
+    - name: 🔍 Debug environment
+      run: |
+        echo "Python version:"
+        python --version
+        echo "pip list:"
+        pip list
+        echo "Current directory:"
+        pwd
+        echo "Files in directory:"
+        ls -la
+        echo "Environment variables:"
+        env | grep -E "(SMTP|EMAIL)" || echo "No email environment variables found"
+
     - name: 🔍 Run Multi-Store Monitor
       env:
         SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
@@ -34,7 +47,27 @@ jobs:
         RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
         GITHUB_ACTIONS: true
       run: |
-        python music_store_monitor.py
+        echo "Starting music store monitor..."
+        python -u music_store_monitor.py
+      continue-on-error: true
+
+    - name: 📋 Check created files
+      if: always()
+      run: |
+        echo "Files after execution:"
+        ls -la
+        echo "Log file content (if exists):"
+        if [ -f "multi_store_monitor_price_required.log" ]; then
+          cat multi_store_monitor_price_required.log
+        else
+          echo "Log file not found"
+        fi
+        echo "JSON file content (if exists):"
+        if [ -f "multi_store_products_price_required.json" ]; then
+          head -20 multi_store_products_price_required.json
+        else
+          echo "JSON file not found"
+        fi
 
     - name: 📊 Upload artifacts
       if: always()
@@ -42,9 +75,10 @@ jobs:
       with:
         name: monitor-logs
         path: |
-          multi_store_monitor_price_required.log
-          multi_store_products_price_required.json
+          *.log
+          *.json
         retention-days: 30
+        if-no-files-found: ignore
 
     - name: 📈 Create summary
       if: always()
