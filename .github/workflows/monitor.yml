@@ -1,0 +1,46 @@
+name: 楽器店商品監視
+
+on:
+  schedule:
+    # 毎日日本時間9:00に実行（UTC 0:00 = JST 9:00）
+    - cron: '0 0 * * *'
+  
+  # 手動実行も可能
+  workflow_dispatch:
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: リポジトリをチェックアウト
+      uses: actions/checkout@v4
+    
+    - name: Python環境のセットアップ
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+    
+    - name: 依存関係をインストール
+      run: |
+        pip install -r requirements.txt
+    
+    - name: 商品監視を実行
+      env:
+        SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+        SMTP_PORT: ${{ secrets.SMTP_PORT }}
+        SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+        SENDER_PASSWORD: ${{ secrets.SENDER_PASSWORD }}
+        RECIPIENT_EMAIL: ${{ secrets.RECIPIENT_EMAIL }}
+      run: |
+        python monitor_github.py
+    
+    - name: 実行ログをアップロード
+      uses: actions/upload-artifact@v3
+      if: always()
+      with:
+        name: monitor-logs-${{ github.run_number }}
+        path: |
+          music_store_monitor.log
+          products_data.json
+        retention-days: 30
