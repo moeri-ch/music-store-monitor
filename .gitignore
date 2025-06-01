@@ -1,3 +1,13 @@
+# Local configuration files
+config.json
+
+# Log files
+*.log
+
+# Data files
+*.json
+!config.json.template
+
 # Python
 __pycache__/
 *.py[cod]
@@ -16,31 +26,34 @@ parts/
 sdist/
 var/
 wheels/
+pip-wheel-metadata/
+share/python-wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+MANIFEST
 
-# 設定ファイル（機密情報を含む可能性があるため）
-config.json
-
-# ログファイル
-*.log
-
-# データファイル
-products_data.json
-
-# 環境変数ファイル
+# Virtual environments
 .env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
 
 # IDE
 .vscode/
 .idea/
 *.swp
 *.swo
+*~
 
-# macOS
+# OS
 .DS_Store
-
-# Windows
-Thumbs.db
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
 ehthumbs.db
+Thumbs.db
