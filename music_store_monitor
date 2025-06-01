@@ -57,7 +57,17 @@ class PriceRequiredMultiStoreMusicMonitor:
         """設定を環境変数またはファイルから読み込み"""
         if os.getenv('GITHUB_ACTIONS'):
             print("🔧 GitHub Actions環境で実行中")
-            return {
+            
+            # 環境変数の存在確認
+            required_vars = ['SENDER_EMAIL', 'SENDER_PASSWORD', 'RECIPIENT_EMAIL']
+            missing_vars = [var for var in required_vars if not os.getenv(var)]
+            
+            if missing_vars:
+                error_msg = f"❌ 必要な環境変数が設定されていません: {missing_vars}"
+                print(error_msg)
+                raise ValueError(error_msg)
+            
+            config = {
                 "email": {
                     "smtp_server": os.getenv('SMTP_SERVER', 'smtp.gmail.com'),
                     "smtp_port": int(os.getenv('SMTP_PORT', 587)),
@@ -66,28 +76,49 @@ class PriceRequiredMultiStoreMusicMonitor:
                     "recipient_email": os.getenv('RECIPIENT_EMAIL')
                 }
             }
+            
+            print(f"✅ 設定読み込み完了:")
+            print(f"  SMTP Server: {config['email']['smtp_server']}")
+            print(f"  SMTP Port: {config['email']['smtp_port']}")
+            print(f"  Sender Email: {config['email']['sender_email']}")
+            print(f"  Recipient Email: {config['email']['recipient_email']}")
+            
+            return config
         else:
+            print("🔧 ローカル環境で実行中")
             try:
                 with open('config.json', 'r', encoding='utf-8') as f:
                     return json.load(f)
             except FileNotFoundError:
                 print("❌ config.jsonが見つかりません")
+                print("ローカル実行する場合は、config.json.templateを参考にconfig.jsonを作成してください")
                 sys.exit(1)
     
     def setup_logging(self):
         """ログ設定"""
+        log_filename = 'multi_store_monitor_price_required.log'
+        
+        # ログファイルを確実に作成
+        try:
+            with open(log_filename, 'a', encoding='utf-8') as f:
+                f.write(f"\n=== ログ開始: {datetime.now()} ===\n")
+        except Exception as e:
+            print(f"ログファイル作成エラー: {e}")
+        
         logging.basicConfig(
             level=logging.INFO,
             format='%(asctime)s - %(levelname)s - %(message)s',
             handlers=[
                 logging.StreamHandler(sys.stdout),
-                logging.FileHandler('multi_store_monitor_price_required.log', encoding='utf-8')
+                logging.FileHandler(log_filename, encoding='utf-8')
             ]
         )
         self.logger = logging.getLogger(__name__)
         
         if os.getenv('GITHUB_ACTIONS'):
             self.logger.info("🚀 GitHub Actions で5サイト統合楽器店監視を開始（週1回・価格必須版・改良版）")
+        else:
+            self.logger.info("🚀 ローカル環境で5サイト統合楽器店監視を開始")
     
     def get_all_products(self):
         """全ての楽器店から商品データを取得"""
@@ -732,11 +763,32 @@ class PriceRequiredMultiStoreMusicMonitor:
 def main():
     """メイン実行関数"""
     try:
+        print("🚀 5サイト統合楽器店監視システム開始")
+        print(f"実行時刻: {datetime.now()}")
+        print(f"GitHub Actions環境: {bool(os.getenv('GITHUB_ACTIONS'))}")
+        
         monitor = PriceRequiredMultiStoreMusicMonitor()
+        print("✅ 監視システム初期化完了")
+        
         monitor.check_for_updates()
         print("🎯 5サイト統合監視処理が正常に完了しました（価格必須版・改良版）")
+        
     except Exception as e:
-        print(f"❌ 実行エラー: {e}")
+        import traceback
+        error_msg = f"❌ 実行エラー: {e}"
+        print(error_msg)
+        print("詳細なエラー情報:")
+        print(traceback.format_exc())
+        
+        # エラーログファイルを作成
+        try:
+            with open('error_log.txt', 'w', encoding='utf-8') as f:
+                f.write(f"実行時刻: {datetime.now()}\n")
+                f.write(f"エラー: {e}\n")
+                f.write(f"詳細:\n{traceback.format_exc()}")
+        except:
+            pass
+        
         sys.exit(1)
 
 if __name__ == "__main__":
