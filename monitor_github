@@ -1,0 +1,380 @@
+#!/usr/bin/env python3
+"""
+GitHub Actions用楽器店商品監視プログラム
+"""
+
+import requests
+from bs4 import BeautifulSoup
+import json
+import smtplib
+import re
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from datetime import datetime
+import logging
+import os
+import sys
+
+class GitHubMusicStoreMonitor:
+    def __init__(self):
+        """GitHub Actions環境用の初期化"""
+        self.url = "https://www.ikebe-gakki.com/Form/Product/ProductList.aspx?shop=0&cat=agt003&bid=ec&dpcnt=20&img=1&sort=07&udns=1&fpfl=0&sfl=0&pno=1"
+        self.data_file = 'products_data.json'
+        self.config = self.load_config()
+        self.setup_logging()
+        
+    def load_config(self):
+        """設定を環境変数またはファイルから読み込み"""
+        # GitHub Actionsの環境変数から読み込み
+        if os.getenv('GITHUB_ACTIONS'):
+            print("🔧 GitHub Actions環境で実行中")
+            return {
+                "email": {
+                    "smtp_server": os.getenv('SMTP_SERVER', 'smtp.gmail.com'),
+                    "smtp_port": int(os.getenv('SMTP_PORT', 587)),
+                    "sender_email": os.getenv('SENDER_EMAIL'),
+                    "sender_password": os.getenv('SENDER_PASSWORD'),
+                    "recipient_email": os.getenv('RECIPIENT_EMAIL')
+                }
+            }
+        else:
+            # ローカル環境ではconfig.jsonから読み込み
+            try:
+                with open('config.json', 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except FileNotFoundError:
+                print("❌ config.jsonが見つかりません")
+                sys.exit(1)
+    
+    def setup_logging(self):
+        """ログ設定（GitHub Actions用）"""
+        # GitHub Actionsでは標準出力に出力
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            handlers=[
+                logging.StreamHandler(sys.stdout),
+                logging.FileHandler('music_store_monitor.log', encoding='utf-8')
+            ]
+        )
+        self.logger = logging.getLogger(__name__)
+        
+        # GitHub Actions用の特別な出力
+        if os.getenv('GITHUB_ACTIONS'):
+            self.logger.info("🚀 GitHub Actions で楽器店商品監視を開始")
+    
+    def get_products(self):
+        """商品データを取得"""
+        try:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+            
+            self.logger.info(f"🔍 商品ページにアクセス: {self.url}")
+            response = requests.get(self.url, headers=headers, timeout=30)
+            response.encoding = 'utf-8'
+            
+            if response.status_code != 200:
+                self.logger.error(f"HTTPエラー: {response.status_code}")
+                return []
+            
+            soup = BeautifulSoup(response.content, 'html.parser')
+            
+            # 商品リンクを抽出
+            product_links = self.extract_product_links(soup)
+            
+            # 各商品リンクから情報を抽出（有効な商品のみ）
+            products = []
+            for link_info in product_links:
+                try:
+                    product = self.parse_product_info(link_info)
+                    if product and self.is_valid_product(product):
+                        products.append(product)
+                        self.logger.debug(f"有効な商品を追加: {product['name']}")
+                    else:
+                        self.logger.debug(f"無効な商品を除外: {link_info.get('text', 'N/A')}")
+                        
+                except Exception as e:
+                    self.logger.warning(f"商品解析エラー: {e}")
+                    continue
+            
+            self.logger.info(f"✅ 有効な商品数: {len(products)}")
+            if len(product_links) > len(products):
+                excluded_count = len(product_links) - len(products)
+                self.logger.info(f"🚫 除外された無効データ: {excluded_count}件")
+            
+            return products
+            
+        except Exception as e:
+            self.logger.error(f"商品取得エラー: {e}")
+            return []
+    
+    def extract_product_links(self, soup):
+        """商品詳細ページへのリンクのみを抽出"""
+        product_links = []
+        all_links = soup.find_all('a', href=True)
+        
+        for link in all_links:
+            href = link.get('href', '')
+            text = link.get_text(strip=True)
+            
+            if self.is_product_link(href, text):
+                price_info = self.find_nearby_price(link)
+                link_info = {
+                    'element': link,
+                    'href': href,
+                    'text': text,
+                    'price_nearby': price_info
+                }
+                product_links.append(link_info)
+        
+        self.logger.info(f"📦 商品リンク候補: {len(product_links)}件")
+        return product_links
+    
+    def is_product_link(self, href, text):
+        """商品詳細ページのリンクかどうかを判定"""
+        product_indicators = ['pid=', '/detail', 'ProductDetail', '/item/']
+        exclude_indicators = [
+            'javascript:', 'mailto:', '#', '/search', '/category', '/cart',
+            '/login', '/register', '/help', '/contact', '/company', '/privacy',
+            'facebook.com', 'twitter.com', 'instagram.com', 'youtube.com',
+            'sort=', 'page=', 'pno=', 'img=', 'dpcnt=',
+        ]
+        
+        href_lower = href.lower()
+        for exclude in exclude_indicators:
+            if exclude in href_lower:
+                return False
+        
+        for indicator in product_indicators:
+            if indicator in href_lower:
+                return True
+        
+        if text and len(text) > 1:
+            instrument_brands = ['yamaha', 'fender', 'gibson', 'martin', 'taylor', 'hernandez', 'yacopi', 'yairi']
+            if any(brand in text.lower() for brand in instrument_brands):
+                if href.startswith('/') or 'ikebe-gakki.com' in href:
+                    return True
+        
+        return False
+    
+    def find_nearby_price(self, link_element):
+        """リンク要素の近くにある価格情報を取得"""
+        current = link_element.parent
+        for _ in range(3):
+            if current is None:
+                break
+            price_text = current.get_text()
+            price_match = self.extract_price_from_text(price_text)
+            if price_match:
+                return price_match
+            current = current.parent
+        return None
+    
+    def extract_price_from_text(self, text):
+        """テキストから価格を抽出"""
+        price_patterns = [
+            r'¥([\d,]+)',
+            r'(\d{1,3}(?:,\d{3})+)円',
+            r'価格[：:]?\s*¥?([\d,]+)',
+            r'(\d{1,3}(?:,\d{3})+)(?=\s*\(税込\))',
+        ]
+        
+        for pattern in price_patterns:
+            match = re.search(pattern, text)
+            if match:
+                return f"¥{match.group(1)}"
+        return None
+    
+    def parse_product_info(self, link_info):
+        """リンク情報から商品情報を構築"""
+        href = link_info['href']
+        text = link_info['text']
+        price_nearby = link_info['price_nearby']
+        
+        if href and not href.startswith('http'):
+            if href.startswith('//'):
+                full_link = 'https:' + href
+            elif href.startswith('/'):
+                full_link = 'https://www.ikebe-gakki.com' + href
+            else:
+                full_link = 'https://www.ikebe-gakki.com/' + href
+        else:
+            full_link = href
+        
+        product_name = text if text and len(text.strip()) > 0 else "商品名不明"
+        price = price_nearby if price_nearby else "価格確認中"
+        product_id = self.generate_product_id(product_name, full_link)
+        
+        return {
+            'id': product_id,
+            'name': product_name,
+            'price': price,
+            'link': full_link,
+            'found_date': datetime.now().isoformat()
+        }
+    
+    def generate_product_id(self, name, link):
+        """商品IDを生成"""
+        if link and 'pid=' in link:
+            try:
+                return link.split('pid=')[1].split('&')[0]
+            except:
+                pass
+        return str(hash(name))[:10]
+    
+    def is_valid_product(self, product):
+        """有効な商品情報かチェック（厳密版）"""
+        if not product or not isinstance(product, dict):
+            return False
+        
+        name = product.get('name', '').strip()
+        if not name or name == "商品名不明" or len(name) < 2:
+            return False
+        
+        link = product.get('link', '')
+        if not link or not link.startswith('http'):
+            return False
+        
+        product_id = product.get('id', '')
+        if not product_id:
+            return False
+        
+        noise_texts = [
+            'more', '読み込み中', 'loading', '...', '詳細', 'detail',
+            'もっと見る', 'view more', 'show more', '続きを見る',
+            'next', 'prev', 'previous', '次へ', '前へ',
+            'ページ', 'page', 'カート', 'cart', 'ログイン', 'login',
+            'menu', 'メニュー', 'search', '検索', 'category', 'カテゴリ',
+            'home', 'ホーム', 'top', 'トップ', 'back', '戻る',
+            'help', 'ヘルプ', 'contact', 'お問い合わせ',
+            'unknown', '不明', 'n/a', 'none', 'null'
+        ]
+        
+        name_lower = name.lower()
+        for noise in noise_texts:
+            if name_lower == noise or name_lower == noise + 's':
+                return False
+        
+        if all(c in '.,;:!?()-[]{}/*+=' for c in name.replace(' ', '')):
+            return False
+        
+        if name.isdigit():
+            return False
+        
+        return True
+    
+    def load_previous_data(self):
+        """前回のデータを読み込み"""
+        try:
+            if os.path.exists(self.data_file):
+                with open(self.data_file, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            else:
+                self.logger.info("📄 初回実行のため、前回データなし")
+                return []
+        except Exception as e:
+            self.logger.error(f"データ読み込みエラー: {e}")
+            return []
+    
+    def save_data(self, products):
+        """商品データを保存"""
+        try:
+            with open(self.data_file, 'w', encoding='utf-8') as f:
+                json.dump(products, f, indent=2, ensure_ascii=False)
+            self.logger.info(f"💾 商品データを保存: {len(products)}件")
+        except Exception as e:
+            self.logger.error(f"データ保存エラー: {e}")
+    
+    def find_new_products(self, current_products, previous_products):
+        """新商品を検出"""
+        previous_ids = {p['id'] for p in previous_products}
+        new_products = [p for p in current_products if p['id'] not in previous_ids]
+        return new_products
+    
+    def send_email(self, new_products):
+        """新商品をメールで通知"""
+        try:
+            email_config = self.config['email']
+            
+            if not all([email_config.get('sender_email'), email_config.get('sender_password'), email_config.get('recipient_email')]):
+                self.logger.error("❌ メール設定が不完全です")
+                return
+            
+            subject = f"🎸 新商品が{len(new_products)}件見つかりました - イケベ楽器店 [GitHub Actions]"
+            
+            body = f"GitHub Actionsで自動検出された新商品 {len(new_products)}件：\n\n"
+            for i, product in enumerate(new_products, 1):
+                body += f"📦 {product['name']}\n"
+                body += f"💰 {product['price']}\n"
+                if product['link']:
+                    body += f"🔗 {product['link']}\n"
+                body += "\n" + "-"*50 + "\n\n"
+            
+            body += f"\n\n検索URL: {self.url}\n"
+            body += f"実行時刻: {datetime.now().strftime('%Y年%m月%d日 %H:%M:%S')} (UTC)\n"
+            body += f"実行環境: GitHub Actions"
+            
+            msg = MIMEMultipart()
+            msg['From'] = email_config['sender_email']
+            msg['To'] = email_config['recipient_email']
+            msg['Subject'] = subject
+            
+            msg.attach(MIMEText(body, 'plain', 'utf-8'))
+            
+            with smtplib.SMTP(email_config['smtp_server'], email_config['smtp_port']) as server:
+                server.starttls()
+                server.login(email_config['sender_email'], email_config['sender_password'])
+                server.send_message(msg)
+            
+            self.logger.info(f"📧 メール送信完了: {len(new_products)}件の新商品")
+            
+        except Exception as e:
+            self.logger.error(f"メール送信エラー: {e}")
+    
+    def check_for_updates(self):
+        """商品更新をチェック"""
+        self.logger.info("🔍 商品チェック開始")
+        
+        # 現在の商品を取得
+        current_products = self.get_products()
+        
+        if not current_products:
+            self.logger.warning("⚠️ 商品データが取得できませんでした")
+            return
+        
+        # 前回のデータを読み込み
+        previous_products = self.load_previous_data()
+        
+        # 新商品を検出
+        new_products = self.find_new_products(current_products, previous_products)
+        
+        if new_products:
+            self.logger.info(f"🎉 新商品を{len(new_products)}件発見")
+            for product in new_products:
+                self.logger.info(f"  ➡️ {product['name']} - {product['price']}")
+            self.send_email(new_products)
+        else:
+            self.logger.info("ℹ️ 新商品はありませんでした")
+        
+        # データを保存
+        self.save_data(current_products)
+        
+        self.logger.info("✅ 商品チェック完了")
+        
+        # GitHub Actions用のサマリー出力
+        if os.getenv('GITHUB_ACTIONS'):
+            print(f"::notice title=商品監視完了::総商品数: {len(current_products)}, 新商品: {len(new_products)}")
+
+def main():
+    """メイン実行関数"""
+    try:
+        monitor = GitHubMusicStoreMonitor()
+        monitor.check_for_updates()
+        print("🎯 監視処理が正常に完了しました")
+    except Exception as e:
+        print(f"❌ 実行エラー: {e}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
