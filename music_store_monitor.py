@@ -199,7 +199,7 @@ class PriceRequiredMultiStoreMusicMonitor:
         elif store_key == 'shimamura':
             return self.parse_shimamura_products(soup, store_info['base_url'])
         elif store_key == 'qsic':
-            return self.parse_qsic_products_fixed(soup, store_info['base_url'])
+            return self.parse_qsic_products_improved(soup, store_info['base_url'])
         elif store_key == 'jguitar':
             return self.parse_jguitar_products_improved(soup, store_info['base_url'])
         else:
@@ -334,14 +334,27 @@ class PriceRequiredMultiStoreMusicMonitor:
         
         return products
     
-    def parse_qsic_products_fixed(self, soup, base_url):
-        """QSicの修正版商品解析（価格必須）"""
+    def parse_qsic_products_improved(self, soup, base_url):
+        """QSicの改良版商品解析（価格必須・リンク取得対応）"""
         products = []
-        text_content = soup.get_text()
         
-        # QSicの商品パターンを正確に解析
+        # QSicの商品リンクを先に抽出
+        product_links = []
+        all_links = soup.find_all('a', href=True)
+        
+        for link in all_links:
+            href = link.get('href', '')
+            # QSicの商品ページURLパターンを判定
+            if self.is_qsic_product_link(href):
+                product_links.append(urljoin(base_url, href))
+        
+        self.logger.info(f"🔗 QSic: {len(product_links)}個の商品リンクを発見")
+        
+        # テキストベースの商品情報解析
+        text_content = soup.get_text()
         lines = [line.strip() for line in text_content.split('\n') if line.strip()]
         
+        product_info_list = []
         i = 0
         while i < len(lines):
             line = lines[i]
@@ -382,22 +395,67 @@ class PriceRequiredMultiStoreMusicMonitor:
                 if description:
                     full_name += f" {description}"
                 
-                product = self.create_product_info(
-                    store='qsic',
-                    name=full_name,
-                    price=price,
-                    link=base_url,
-                    store_name='QSic'
-                )
-                
-                if self.is_valid_product(product):
-                    products.append(product)
+                product_info_list.append({
+                    'name': full_name,
+                    'price': price
+                })
                 
                 i += 3  # 商品名、状態、価格行をスキップ
             else:
                 i += 1
         
+        # 商品情報とリンクを組み合わせ
+        for i, product_info in enumerate(product_info_list):
+            # リンクがある場合は対応するリンクを使用、なければベースURL
+            product_url = product_links[i] if i < len(product_links) else base_url
+            
+            product = self.create_product_info(
+                store='qsic',
+                name=product_info['name'],
+                price=product_info['price'],
+                link=product_url,
+                store_name='QSic'
+            )
+            
+            if self.is_valid_product(product):
+                products.append(product)
+        
+        self.logger.info(f"✅ QSic: {len(products)}件の有効な商品を作成")
         return products
+    
+    def is_qsic_product_link(self, href):
+        """QSicの商品リンクかどうかを判定"""
+        if not href:
+            return False
+        
+        # QSicの商品ページURLパターン
+        qsic_patterns = [
+            'mode=item',           # ?mode=item&id=xxx 形式
+            'item_detail',         # item_detail.php 形式
+            'product',             # product/ 形式
+            'goods',               # goods/ 形式
+            'shop-item'            # shop-item/ 形式
+        ]
+        
+        # 除外パターン
+        exclude_patterns = [
+            'javascript:', 'mailto:', '#', 'mode=cate', 'mode=search',
+            'cart', 'login', 'register', 'help', 'contact', 'company'
+        ]
+        
+        href_lower = href.lower()
+        
+        # 除外パターンチェック
+        for exclude in exclude_patterns:
+            if exclude in href_lower:
+                return False
+        
+        # 商品パターンチェック
+        for pattern in qsic_patterns:
+            if pattern in href_lower:
+                return True
+        
+        return False
     
     def parse_jguitar_products_improved(self, soup, base_url):
         """J-Guitarの大幅改良版商品解析（商品名抽出を大幅改善）"""
