@@ -335,193 +335,20 @@ class PriceRequiredMultiStoreMusicMonitor:
         return products
     
     def parse_qsic_products_fixed(self, soup, base_url):
-        """QSicの修正版商品解析（価格必須・各商品ページリンク対応）"""
+        """QSicの修正版商品解析（価格必須・pid=商品ID形式対応）"""
         products = []
         
-        # 方法1: 商品リンクとテキスト情報を同時に抽出
-        product_data = self.extract_qsic_product_data_with_links(soup, base_url)
+        # QSicの商品リンクを抽出（pid=商品ID形式）
+        product_links_data = self.extract_qsic_product_links(soup, base_url)
         
-        if product_data:
-            for product_info in product_data:
-                product = self.create_product_info(
-                    store='qsic',
-                    name=product_info['name'],
-                    price=product_info['price'],
-                    link=product_info['link'],
-                    store_name='QSic'
-                )
-                
-                if self.is_valid_product(product):
-                    products.append(product)
+        self.logger.info(f"🔗 QSic: {len(product_links_data)}個の商品リンクを発見")
         
-        # 方法2: テキストベースでバックアップ解析（リンクは後で結合）
-        if len(products) < 5:
-            backup_products = self.extract_qsic_products_text_based(soup, base_url)
-            for backup_product in backup_products:
-                if backup_product not in products:
-                    products.append(backup_product)
-        
-        self.logger.info(f"✅ QSic: {len(products)}件の有効な商品を作成")
-        return products[:20]  # 最大20件に制限
-    
-    def extract_qsic_product_data_with_links(self, soup, base_url):
-        """QSicの商品データをリンクと共に抽出"""
-        products = []
-        
-        # 商品リンクを含む要素を探す
-        product_links = soup.find_all('a', href=lambda x: x and self.is_qsic_product_link(x))
-        
-        self.logger.info(f"🔗 QSic: {len(product_links)}個の商品リンクを発見")
-        
-        for link in product_links:
-            href = link.get('href', '')
-            
-            # リンクテキストから商品名を取得
-            link_text = link.get_text(strip=True)
-            
-            # 親要素や周辺要素から商品情報を抽出
-            product_info = self.extract_product_info_from_link_context(link, base_url)
-            
-            if product_info and product_info['name'] and product_info['price']:
-                products.append(product_info)
-        
-        return products
-    
-    def extract_product_info_from_link_context(self, link, base_url):
-        """リンク要素の文脈から商品情報を抽出"""
-        href = link.get('href', '')
-        link_text = link.get_text(strip=True)
-        
-        # 完全なURLを作成
-        full_link = urljoin(base_url, href)
-        
-        # 商品名を複数の方法で検索
-        product_name = None
-        price = None
-        
-        # 方法1: リンクテキスト自体が商品名の場合
-        if self.is_valid_qsic_product_name(link_text):
-            product_name = link_text
-        
-        # 方法2: 親要素内で商品名を検索
-        if not product_name:
-            parent = link.parent
-            for i in range(3):  # 最大3階層まで上る
-                if parent is None:
-                    break
-                parent_text = parent.get_text(strip=True)
-                
-                # 【返品OK】パターンを検索
-                if '【返品OK】' in parent_text:
-                    name_part = parent_text.split('【返品OK】')[0].strip()
-                    if self.is_valid_qsic_product_name(name_part):
-                        product_name = name_part
-                        break
-                
-                parent = parent.parent
-        
-        # 方法3: 周辺要素で商品名を検索
-        if not product_name:
-            # 同じ階層の兄弟要素を検索
-            for sibling in link.find_next_siblings():
-                sibling_text = sibling.get_text(strip=True)
-                if self.is_valid_qsic_product_name(sibling_text):
-                    product_name = sibling_text
-                    break
-            
-            # 前の兄弟要素も検索
-            if not product_name:
-                for sibling in link.find_previous_siblings():
-                    sibling_text = sibling.get_text(strip=True)
-                    if self.is_valid_qsic_product_name(sibling_text):
-                        product_name = sibling_text
-                        break
-        
-        # 価格を検索
-        price = self.find_price_near_link(link)
-        
-        if product_name and price:
-            return {
-                'name': product_name,
-                'price': price,
-                'link': full_link
-            }
-        
-        return None
-    
-    def is_valid_qsic_product_name(self, text):
-        """QSicの有効な商品名かを判定"""
-        if not text or len(text) < 10:
-            return False
-        
-        # ノイズテキストを除外
-        noise_patterns = ['返品', '詳細', 'カート', 'ログイン', 'メニュー', 'ページ', '送料']
-        text_lower = text.lower()
-        
-        for noise in noise_patterns:
-            if noise in text_lower:
-                return False
-        
-        # ギター関連の単語があれば商品名の可能性が高い
-        guitar_keywords = ['guitar', 'ギター', 'classical', 'クラシック', 'flamenco', 'フラメンコ']
-        for keyword in guitar_keywords:
-            if keyword in text_lower:
-                return True
-        
-        # 一般的な楽器ブランド名
-        brands = ['yamaha', 'martin', 'gibson', 'fender', 'taylor', 'hernandez', 'ramirez']
-        for brand in brands:
-            if brand in text_lower:
-                return True
-        
-        return False
-    
-    def find_price_near_link(self, link):
-        """リンク周辺の価格を検索"""
-        # リンク自体の親要素内を検索
-        current = link
-        for i in range(5):  # 最大5階層
-            if current is None:
-                break
-            
-            text = current.get_text()
-            price = self.extract_price_from_text(text)
-            if price:
-                return price
-            
-            current = current.parent
-        
-        # 同じ階層の要素を検索
-        for sibling in link.find_next_siblings():
-            text = sibling.get_text()
-            price = self.extract_price_from_text(text)
-            if price:
-                return price
-        
-        for sibling in link.find_previous_siblings():
-            text = sibling.get_text()
-            price = self.extract_price_from_text(text)
-            if price:
-                return price
-        
-        return None
-    
-    def extract_qsic_products_text_based(self, soup, base_url):
-        """QSicのテキストベース商品解析（バックアップ方法）"""
-        products = []
+        # テキストベースの商品情報解析
         text_content = soup.get_text()
         lines = [line.strip() for line in text_content.split('\n') if line.strip()]
         
-        # 商品リンクを事前に抽出
-        all_product_links = []
-        for link in soup.find_all('a', href=True):
-            href = link.get('href', '')
-            if self.is_qsic_product_link(href):
-                all_product_links.append(urljoin(base_url, href))
-        
+        product_info_list = []
         i = 0
-        link_index = 0
-        
         while i < len(lines):
             line = lines[i]
             
@@ -561,34 +388,78 @@ class PriceRequiredMultiStoreMusicMonitor:
                 if description:
                     full_name += f" {description}"
                 
-                # 対応するリンクを取得
-                product_url = all_product_links[link_index] if link_index < len(all_product_links) else f"{base_url}/?mode=item&id=unknown"
-                link_index += 1
-                
-                product = self.create_product_info(
-                    store='qsic',
-                    name=full_name,
-                    price=price,
-                    link=product_url,
-                    store_name='QSic'
-                )
-                
-                if self.is_valid_product(product):
-                    products.append(product)
+                product_info_list.append({
+                    'name': full_name,
+                    'price': price
+                })
                 
                 i += 3  # 商品名、状態、価格行をスキップ
             else:
                 i += 1
         
-        return products
+        # 商品情報とリンクを組み合わせ
+        for i, product_info in enumerate(product_info_list):
+            # 対応するリンクがある場合は使用、なければ適切な形式のリンクを生成
+            if i < len(product_links_data):
+                product_url = product_links_data[i]['url']
+            else:
+                # pidベースのURLを生成（実際のpidが不明な場合）
+                product_url = f"{base_url}/?pid=unknown_{i}"
+            
+            product = self.create_product_info(
+                store='qsic',
+                name=product_info['name'],
+                price=product_info['price'],
+                link=product_url,
+                store_name='QSic'
+            )
+            
+            if self.is_valid_product(product):
+                products.append(product)
+        
+        self.logger.info(f"✅ QSic: {len(products)}件の有効な商品を作成")
+        return products[:20]  # 最大20件に制限
+    
+    def extract_qsic_product_links(self, soup, base_url):
+        """QSicの商品リンクを抽出（pid=商品ID形式）"""
+        product_links = []
+        
+        # 全てのリンクを検索
+        all_links = soup.find_all('a', href=True)
+        
+        for link in all_links:
+            href = link.get('href', '')
+            
+            # QSicの商品リンクかチェック
+            if self.is_qsic_product_link(href):
+                full_url = urljoin(base_url, href)
+                
+                # pidを抽出
+                pid_match = re.search(r'[?&]pid=(\d+)', href)
+                pid = pid_match.group(1) if pid_match else 'unknown'
+                
+                product_links.append({
+                    'url': full_url,
+                    'pid': pid,
+                    'original_href': href
+                })
+        
+        # pidでソート（数値順）
+        try:
+            product_links.sort(key=lambda x: int(x['pid']) if x['pid'].isdigit() else 0)
+        except:
+            pass  # ソートに失敗しても継続
+        
+        return product_links
     
     def is_qsic_product_link(self, href):
-        """QSicの商品リンクかどうかを判定（改良版）"""
+        """QSicの商品リンクかどうかを判定（pid=商品ID形式対応）"""
         if not href:
             return False
         
-        # QSicの商品ページURLパターン（より正確に）
+        # QSicの商品ページURLパターン（pid=商品ID形式を最優先）
         qsic_patterns = [
+            'pid=',                # ?pid=xxx 形式（最優先）
             'mode=item',           # ?mode=item&id=xxx 形式
             '/item/',              # /item/xxx 形式
             'product_id=',         # product_id=xxx 形式
@@ -611,14 +482,14 @@ class PriceRequiredMultiStoreMusicMonitor:
             if exclude in href_lower:
                 return False
         
-        # 商品パターンチェック
-        for pattern in qsic_patterns:
+        # pid=数字 パターンを最優先でチェック
+        if re.search(r'[?&]pid=\d+', href_lower):
+            return True
+        
+        # その他の商品パターンチェック
+        for pattern in qsic_patterns[1:]:  # pid=以外をチェック
             if pattern in href_lower:
                 return True
-        
-        # QSicドメイン内で数字IDを含むリンク
-        if 'qsic.jp' in href_lower and re.search(r'[?&]id=\d+', href_lower):
-            return True
         
         return False
     
@@ -1119,32 +990,4 @@ def main():
     """メイン実行関数"""
     try:
         print("🚀 5サイト統合楽器店監視システム開始")
-        print(f"実行時刻: {datetime.now()}")
-        print(f"GitHub Actions環境: {bool(os.getenv('GITHUB_ACTIONS'))}")
-        
-        monitor = PriceRequiredMultiStoreMusicMonitor()
-        print("✅ 監視システム初期化完了")
-        
-        monitor.check_for_updates()
-        print("🎯 5サイト統合監視処理が正常に完了しました（毎日・10万円以上・改良版）")
-        
-    except Exception as e:
-        import traceback
-        error_msg = f"❌ 実行エラー: {e}"
-        print(error_msg)
-        print("詳細なエラー情報:")
-        print(traceback.format_exc())
-        
-        # エラーログファイルを作成
-        try:
-            with open('error_log.txt', 'w', encoding='utf-8') as f:
-                f.write(f"実行時刻: {datetime.now()}\n")
-                f.write(f"エラー: {e}\n")
-                f.write(f"詳細:\n{traceback.format_exc()}")
-        except:
-            pass
-        
-        sys.exit(1)
-
-if __name__ == "__main__":
-    main()
+        print(
