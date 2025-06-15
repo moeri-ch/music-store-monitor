@@ -199,7 +199,7 @@ class PriceRequiredMultiStoreMusicMonitor:
         elif store_key == 'shimamura':
             return self.parse_shimamura_products(soup, store_info['base_url'])
         elif store_key == 'qsic':
-            return self.parse_qsic_products_improved(soup, store_info['base_url'])
+            return self.parse_qsic_products_fixed(soup, store_info['base_url'])
         elif store_key == 'jguitar':
             return self.parse_jguitar_products_improved(soup, store_info['base_url'])
         else:
@@ -334,28 +334,194 @@ class PriceRequiredMultiStoreMusicMonitor:
         
         return products
     
-    def parse_qsic_products_improved(self, soup, base_url):
-        """QSicの改良版商品解析（価格必須・リンク取得対応）"""
+    def parse_qsic_products_fixed(self, soup, base_url):
+        """QSicの修正版商品解析（価格必須・各商品ページリンク対応）"""
         products = []
         
-        # QSicの商品リンクを先に抽出
-        product_links = []
-        all_links = soup.find_all('a', href=True)
+        # 方法1: 商品リンクとテキスト情報を同時に抽出
+        product_data = self.extract_qsic_product_data_with_links(soup, base_url)
         
-        for link in all_links:
-            href = link.get('href', '')
-            # QSicの商品ページURLパターンを判定
-            if self.is_qsic_product_link(href):
-                product_links.append(urljoin(base_url, href))
+        if product_data:
+            for product_info in product_data:
+                product = self.create_product_info(
+                    store='qsic',
+                    name=product_info['name'],
+                    price=product_info['price'],
+                    link=product_info['link'],
+                    store_name='QSic'
+                )
+                
+                if self.is_valid_product(product):
+                    products.append(product)
+        
+        # 方法2: テキストベースでバックアップ解析（リンクは後で結合）
+        if len(products) < 5:
+            backup_products = self.extract_qsic_products_text_based(soup, base_url)
+            for backup_product in backup_products:
+                if backup_product not in products:
+                    products.append(backup_product)
+        
+        self.logger.info(f"✅ QSic: {len(products)}件の有効な商品を作成")
+        return products[:20]  # 最大20件に制限
+    
+    def extract_qsic_product_data_with_links(self, soup, base_url):
+        """QSicの商品データをリンクと共に抽出"""
+        products = []
+        
+        # 商品リンクを含む要素を探す
+        product_links = soup.find_all('a', href=lambda x: x and self.is_qsic_product_link(x))
         
         self.logger.info(f"🔗 QSic: {len(product_links)}個の商品リンクを発見")
         
-        # テキストベースの商品情報解析
+        for link in product_links:
+            href = link.get('href', '')
+            
+            # リンクテキストから商品名を取得
+            link_text = link.get_text(strip=True)
+            
+            # 親要素や周辺要素から商品情報を抽出
+            product_info = self.extract_product_info_from_link_context(link, base_url)
+            
+            if product_info and product_info['name'] and product_info['price']:
+                products.append(product_info)
+        
+        return products
+    
+    def extract_product_info_from_link_context(self, link, base_url):
+        """リンク要素の文脈から商品情報を抽出"""
+        href = link.get('href', '')
+        link_text = link.get_text(strip=True)
+        
+        # 完全なURLを作成
+        full_link = urljoin(base_url, href)
+        
+        # 商品名を複数の方法で検索
+        product_name = None
+        price = None
+        
+        # 方法1: リンクテキスト自体が商品名の場合
+        if self.is_valid_qsic_product_name(link_text):
+            product_name = link_text
+        
+        # 方法2: 親要素内で商品名を検索
+        if not product_name:
+            parent = link.parent
+            for i in range(3):  # 最大3階層まで上る
+                if parent is None:
+                    break
+                parent_text = parent.get_text(strip=True)
+                
+                # 【返品OK】パターンを検索
+                if '【返品OK】' in parent_text:
+                    name_part = parent_text.split('【返品OK】')[0].strip()
+                    if self.is_valid_qsic_product_name(name_part):
+                        product_name = name_part
+                        break
+                
+                parent = parent.parent
+        
+        # 方法3: 周辺要素で商品名を検索
+        if not product_name:
+            # 同じ階層の兄弟要素を検索
+            for sibling in link.find_next_siblings():
+                sibling_text = sibling.get_text(strip=True)
+                if self.is_valid_qsic_product_name(sibling_text):
+                    product_name = sibling_text
+                    break
+            
+            # 前の兄弟要素も検索
+            if not product_name:
+                for sibling in link.find_previous_siblings():
+                    sibling_text = sibling.get_text(strip=True)
+                    if self.is_valid_qsic_product_name(sibling_text):
+                        product_name = sibling_text
+                        break
+        
+        # 価格を検索
+        price = self.find_price_near_link(link)
+        
+        if product_name and price:
+            return {
+                'name': product_name,
+                'price': price,
+                'link': full_link
+            }
+        
+        return None
+    
+    def is_valid_qsic_product_name(self, text):
+        """QSicの有効な商品名かを判定"""
+        if not text or len(text) < 10:
+            return False
+        
+        # ノイズテキストを除外
+        noise_patterns = ['返品', '詳細', 'カート', 'ログイン', 'メニュー', 'ページ', '送料']
+        text_lower = text.lower()
+        
+        for noise in noise_patterns:
+            if noise in text_lower:
+                return False
+        
+        # ギター関連の単語があれば商品名の可能性が高い
+        guitar_keywords = ['guitar', 'ギター', 'classical', 'クラシック', 'flamenco', 'フラメンコ']
+        for keyword in guitar_keywords:
+            if keyword in text_lower:
+                return True
+        
+        # 一般的な楽器ブランド名
+        brands = ['yamaha', 'martin', 'gibson', 'fender', 'taylor', 'hernandez', 'ramirez']
+        for brand in brands:
+            if brand in text_lower:
+                return True
+        
+        return False
+    
+    def find_price_near_link(self, link):
+        """リンク周辺の価格を検索"""
+        # リンク自体の親要素内を検索
+        current = link
+        for i in range(5):  # 最大5階層
+            if current is None:
+                break
+            
+            text = current.get_text()
+            price = self.extract_price_from_text(text)
+            if price:
+                return price
+            
+            current = current.parent
+        
+        # 同じ階層の要素を検索
+        for sibling in link.find_next_siblings():
+            text = sibling.get_text()
+            price = self.extract_price_from_text(text)
+            if price:
+                return price
+        
+        for sibling in link.find_previous_siblings():
+            text = sibling.get_text()
+            price = self.extract_price_from_text(text)
+            if price:
+                return price
+        
+        return None
+    
+    def extract_qsic_products_text_based(self, soup, base_url):
+        """QSicのテキストベース商品解析（バックアップ方法）"""
+        products = []
         text_content = soup.get_text()
         lines = [line.strip() for line in text_content.split('\n') if line.strip()]
         
-        product_info_list = []
+        # 商品リンクを事前に抽出
+        all_product_links = []
+        for link in soup.find_all('a', href=True):
+            href = link.get('href', '')
+            if self.is_qsic_product_link(href):
+                all_product_links.append(urljoin(base_url, href))
+        
         i = 0
+        link_index = 0
+        
         while i < len(lines):
             line = lines[i]
             
@@ -395,52 +561,47 @@ class PriceRequiredMultiStoreMusicMonitor:
                 if description:
                     full_name += f" {description}"
                 
-                product_info_list.append({
-                    'name': full_name,
-                    'price': price
-                })
+                # 対応するリンクを取得
+                product_url = all_product_links[link_index] if link_index < len(all_product_links) else f"{base_url}/?mode=item&id=unknown"
+                link_index += 1
+                
+                product = self.create_product_info(
+                    store='qsic',
+                    name=full_name,
+                    price=price,
+                    link=product_url,
+                    store_name='QSic'
+                )
+                
+                if self.is_valid_product(product):
+                    products.append(product)
                 
                 i += 3  # 商品名、状態、価格行をスキップ
             else:
                 i += 1
         
-        # 商品情報とリンクを組み合わせ
-        for i, product_info in enumerate(product_info_list):
-            # リンクがある場合は対応するリンクを使用、なければベースURL
-            product_url = product_links[i] if i < len(product_links) else base_url
-            
-            product = self.create_product_info(
-                store='qsic',
-                name=product_info['name'],
-                price=product_info['price'],
-                link=product_url,
-                store_name='QSic'
-            )
-            
-            if self.is_valid_product(product):
-                products.append(product)
-        
-        self.logger.info(f"✅ QSic: {len(products)}件の有効な商品を作成")
         return products
     
     def is_qsic_product_link(self, href):
-        """QSicの商品リンクかどうかを判定"""
+        """QSicの商品リンクかどうかを判定（改良版）"""
         if not href:
             return False
         
-        # QSicの商品ページURLパターン
+        # QSicの商品ページURLパターン（より正確に）
         qsic_patterns = [
             'mode=item',           # ?mode=item&id=xxx 形式
+            '/item/',              # /item/xxx 形式
+            'product_id=',         # product_id=xxx 形式
+            'goods_id=',           # goods_id=xxx 形式
             'item_detail',         # item_detail.php 形式
-            'product',             # product/ 形式
-            'goods',               # goods/ 形式
-            'shop-item'            # shop-item/ 形式
         ]
         
-        # 除外パターン
+        # 除外パターン（より厳密に）
         exclude_patterns = [
             'javascript:', 'mailto:', '#', 'mode=cate', 'mode=search',
-            'cart', 'login', 'register', 'help', 'contact', 'company'
+            'mode=cart', 'mode=login', 'mode=register', 'mode=help',
+            'cart', 'login', 'register', 'help', 'contact', 'company',
+            'search', 'category', 'sort=', 'page=', 'cbid=', 'csid='
         ]
         
         href_lower = href.lower()
@@ -454,6 +615,10 @@ class PriceRequiredMultiStoreMusicMonitor:
         for pattern in qsic_patterns:
             if pattern in href_lower:
                 return True
+        
+        # QSicドメイン内で数字IDを含むリンク
+        if 'qsic.jp' in href_lower and re.search(r'[?&]id=\d+', href_lower):
+            return True
         
         return False
     
