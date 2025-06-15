@@ -335,19 +335,13 @@ class PriceRequiredMultiStoreMusicMonitor:
         return products
     
     def parse_qsic_products_fixed(self, soup, base_url):
-        """QSicの修正版商品解析（価格必須・pid=商品ID形式対応）"""
+        """QSicの修正版商品解析（価格必須）"""
         products = []
-        
-        # QSicの商品リンクを抽出（pid=商品ID形式）
-        product_links_data = self.extract_qsic_product_links(soup, base_url)
-        
-        self.logger.info(f"🔗 QSic: {len(product_links_data)}個の商品リンクを発見")
-        
-        # テキストベースの商品情報解析
         text_content = soup.get_text()
+        
+        # QSicの商品パターンを正確に解析
         lines = [line.strip() for line in text_content.split('\n') if line.strip()]
         
-        product_info_list = []
         i = 0
         while i < len(lines):
             line = lines[i]
@@ -388,110 +382,22 @@ class PriceRequiredMultiStoreMusicMonitor:
                 if description:
                     full_name += f" {description}"
                 
-                product_info_list.append({
-                    'name': full_name,
-                    'price': price
-                })
+                product = self.create_product_info(
+                    store='qsic',
+                    name=full_name,
+                    price=price,
+                    link=base_url,
+                    store_name='QSic'
+                )
+                
+                if self.is_valid_product(product):
+                    products.append(product)
                 
                 i += 3  # 商品名、状態、価格行をスキップ
             else:
                 i += 1
         
-        # 商品情報とリンクを組み合わせ
-        for i, product_info in enumerate(product_info_list):
-            # 対応するリンクがある場合は使用、なければ適切な形式のリンクを生成
-            if i < len(product_links_data):
-                product_url = product_links_data[i]['url']
-            else:
-                # pidベースのURLを生成（実際のpidが不明な場合）
-                product_url = f"{base_url}/?pid=unknown_{i}"
-            
-            product = self.create_product_info(
-                store='qsic',
-                name=product_info['name'],
-                price=product_info['price'],
-                link=product_url,
-                store_name='QSic'
-            )
-            
-            if self.is_valid_product(product):
-                products.append(product)
-        
-        self.logger.info(f"✅ QSic: {len(products)}件の有効な商品を作成")
-        return products[:20]  # 最大20件に制限
-    
-    def extract_qsic_product_links(self, soup, base_url):
-        """QSicの商品リンクを抽出（pid=商品ID形式）"""
-        product_links = []
-        
-        # 全てのリンクを検索
-        all_links = soup.find_all('a', href=True)
-        
-        for link in all_links:
-            href = link.get('href', '')
-            
-            # QSicの商品リンクかチェック
-            if self.is_qsic_product_link(href):
-                full_url = urljoin(base_url, href)
-                
-                # pidを抽出
-                pid_match = re.search(r'[?&]pid=(\d+)', href)
-                pid = pid_match.group(1) if pid_match else 'unknown'
-                
-                product_links.append({
-                    'url': full_url,
-                    'pid': pid,
-                    'original_href': href
-                })
-        
-        # pidでソート（数値順）
-        try:
-            product_links.sort(key=lambda x: int(x['pid']) if x['pid'].isdigit() else 0)
-        except:
-            pass  # ソートに失敗しても継続
-        
-        return product_links
-    
-    def is_qsic_product_link(self, href):
-        """QSicの商品リンクかどうかを判定（pid=商品ID形式対応）"""
-        if not href:
-            return False
-        
-        # QSicの商品ページURLパターン（pid=商品ID形式を最優先）
-        qsic_patterns = [
-            'pid=',                # ?pid=xxx 形式（最優先）
-            'mode=item',           # ?mode=item&id=xxx 形式
-            '/item/',              # /item/xxx 形式
-            'product_id=',         # product_id=xxx 形式
-            'goods_id=',           # goods_id=xxx 形式
-            'item_detail',         # item_detail.php 形式
-        ]
-        
-        # 除外パターン（より厳密に）
-        exclude_patterns = [
-            'javascript:', 'mailto:', '#', 'mode=cate', 'mode=search',
-            'mode=cart', 'mode=login', 'mode=register', 'mode=help',
-            'cart', 'login', 'register', 'help', 'contact', 'company',
-            'search', 'category', 'sort=', 'page=', 'cbid=', 'csid='
-        ]
-        
-        href_lower = href.lower()
-        
-        # 除外パターンチェック
-        for exclude in exclude_patterns:
-            if exclude in href_lower:
-                return False
-        
-        # pid=数字 パターンを最優先でチェック
-        if re.search(r'[?&]pid=\d+', href_lower):
-            return True
-        
-        # その他の商品パターンチェック
-        for pattern in qsic_patterns[1:]:  # pid=以外をチェック
-            if pattern in href_lower:
-                return True
-        
-        return False
+        return products
     
     def parse_jguitar_products_improved(self, soup, base_url):
         """J-Guitarの大幅改良版商品解析（商品名抽出を大幅改善）"""
@@ -990,4 +896,32 @@ def main():
     """メイン実行関数"""
     try:
         print("🚀 5サイト統合楽器店監視システム開始")
-        print(
+        print(f"実行時刻: {datetime.now()}")
+        print(f"GitHub Actions環境: {bool(os.getenv('GITHUB_ACTIONS'))}")
+        
+        monitor = PriceRequiredMultiStoreMusicMonitor()
+        print("✅ 監視システム初期化完了")
+        
+        monitor.check_for_updates()
+        print("🎯 5サイト統合監視処理が正常に完了しました（毎日・10万円以上・改良版）")
+        
+    except Exception as e:
+        import traceback
+        error_msg = f"❌ 実行エラー: {e}"
+        print(error_msg)
+        print("詳細なエラー情報:")
+        print(traceback.format_exc())
+        
+        # エラーログファイルを作成
+        try:
+            with open('error_log.txt', 'w', encoding='utf-8') as f:
+                f.write(f"実行時刻: {datetime.now()}\n")
+                f.write(f"エラー: {e}\n")
+                f.write(f"詳細:\n{traceback.format_exc()}")
+        except:
+            pass
+        
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
