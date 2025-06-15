@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 価格必須版5つの楽器店サイト統合監視プログラム (GitHub Actions対応・改良版)
-週1回実行・価格情報付き商品のみ抽出
+毎日実行・10万円以上の商品のみ・キーワード検出機能付き
 """
 
 import requests
@@ -52,6 +52,7 @@ class PriceRequiredMultiStoreMusicMonitor:
         self.data_file = 'multi_store_products_price_required.json'
         self.config = self.load_config()
         self.setup_logging()
+        self.special_keywords = ['ダブルトップ', 'ラティス', 'doubletop', 'lattice']
         
     def load_config(self):
         """設定を環境変数またはファイルから読み込み"""
@@ -116,9 +117,33 @@ class PriceRequiredMultiStoreMusicMonitor:
         self.logger = logging.getLogger(__name__)
         
         if os.getenv('GITHUB_ACTIONS'):
-            self.logger.info("🚀 GitHub Actions で5サイト統合楽器店監視を開始（週1回・価格必須版・改良版）")
+            self.logger.info("🚀 GitHub Actions で5サイト統合楽器店監視を開始（毎日・10万円以上・改良版）")
         else:
             self.logger.info("🚀 ローカル環境で5サイト統合楽器店監視を開始")
+    
+    def extract_price_value(self, price_str):
+        """価格文字列から数値を抽出"""
+        if not price_str:
+            return 0
+        
+        # 数字とカンマのみを抽出
+        numbers = re.findall(r'[\d,]+', price_str)
+        if numbers:
+            try:
+                return int(numbers[0].replace(',', ''))
+            except ValueError:
+                return 0
+        return 0
+    
+    def is_high_value_product(self, product):
+        """10万円以上の商品かチェック"""
+        price_value = self.extract_price_value(product.get('price', ''))
+        return price_value >= 100000
+    
+    def has_special_keywords(self, product_name):
+        """特別なキーワード（ダブルトップ、ラティス）が含まれているかチェック"""
+        name_lower = product_name.lower()
+        return any(keyword.lower() in name_lower for keyword in self.special_keywords)
     
     def get_all_products(self):
         """全ての楽器店から商品データを取得"""
@@ -176,7 +201,7 @@ class PriceRequiredMultiStoreMusicMonitor:
         elif store_key == 'qsic':
             return self.parse_qsic_products_fixed(soup, store_info['base_url'])
         elif store_key == 'jguitar':
-            return self.parse_jguitar_products_fixed(soup, store_info['base_url'])
+            return self.parse_jguitar_products_improved(soup, store_info['base_url'])
         else:
             return []
     
@@ -374,128 +399,68 @@ class PriceRequiredMultiStoreMusicMonitor:
         
         return products
     
-    def parse_jguitar_products_fixed(self, soup, base_url):
-        """J-Guitarの改良版商品解析（価格抽出強化）"""
+    def parse_jguitar_products_improved(self, soup, base_url):
+        """J-Guitarの大幅改良版商品解析（商品名抽出を大幅改善）"""
         products = []
-        text_content = soup.get_text()
         
-        # テキストを行分割
-        lines = [line.strip() for line in text_content.split('\n') if line.strip()]
+        # 商品リンクを直接探す
+        product_links = soup.find_all('a', href=lambda x: x and ('detail' in x or 'product' in x))
         
-        # より緩い価格パターンを定義
-        price_patterns = [
-            r'(\d{1,3}(?:,\d{3})+)円',
-            r'¥\s*(\d{1,3}(?:,\d{3})+)',
-            r'価格[：:\s]*(\d{1,3}(?:,\d{3})+)',
-            r'(\d{1,3}(?:,\d{3})+)\s*円\s*\(',
-            r'(\d{2,3},\d{3})(?:\s|$)',  # より緩いパターン
-            r'(\d{6,})(?:\s|$)',         # 6桁以上の数字
-        ]
+        # テーブル構造を解析
+        tables = soup.find_all('table')
         
-        # 商品候補をより広く検索
-        brand_keywords = [
-            'ホセ・ラミレス', 'ラミレス', 'Ramirez', 'RAMIREZ',
-            'ホアン・エルナンデス', 'エルナンデス', 'Hernandez', 'HERNANDEZ',
-            '桜井', 'Sakurai', 'YAMAHA', 'Gibson', 'GIBSON', 'Ibanez', 'IBANEZ',
-            'Godin', 'GODIN', 'Cordoba', 'CORDOBA', 'Esteve', 'ESTEVE',
-            '河野', 'Kohno', '中村', 'Nakamura', '黒澤', 'Kurosawa',
-            'Francisco', 'Antonio', 'Sanchez', 'Conde', 'Hermanos',
-            'アントニオ', 'サンチェス', 'コンデ', 'エルマノス'
-        ]
-        
-        guitar_keywords = [
-            'クラシックギター', 'フラメンコギター', 'エレガット', 'ナイロン',
-            '650mm', '640mm', 'セダー', 'ローズウッド', 'スプルース',
-            'Classical', 'Flamenco', 'Guitar', 'Nylon'
-        ]
-        
-        year_pattern = re.compile(r'(19|20)\d{2}年')
-        
-        # 価格情報を先に全て抽出
-        price_lines = {}
-        for i, line in enumerate(lines):
-            for pattern in price_patterns:
-                price_match = re.search(pattern, line)
-                if price_match:
-                    try:
-                        price_num = int(price_match.group(1).replace(',', ''))
-                        # 楽器として妥当な価格範囲
-                        if 5000 <= price_num <= 10000000:
-                            price_lines[i] = f"¥{price_match.group(1)}"
-                    except:
-                        pass
-        
-        # 商品名候補を検索
-        product_candidates = []
-        
-        for i, line in enumerate(lines):
-            is_product_line = False
+        for table in tables:
+            rows = table.find_all('tr')
             
-            # 長さチェック（短すぎる・長すぎる行を除外）
-            if len(line) < 10 or len(line) > 200:
-                continue
-            
-            # ブランド名チェック
-            for brand in brand_keywords:
-                if brand in line:
-                    is_product_line = True
-                    break
-            
-            # 年製チェック
-            if year_pattern.search(line):
-                is_product_line = True
-            
-            # ギター関連キーワードチェック
-            if any(keyword in line for keyword in guitar_keywords):
-                is_product_line = True
-            
-            # モデル番号らしきパターンチェック
-            model_patterns = [
-                r'[A-Z]{2,}-\d+',    # CG-142, GC-7など
-                r'No\.\d+',         # No.30など
-                r'Model\s+\d+',     # Model 128など
-            ]
-            
-            for pattern in model_patterns:
-                if re.search(pattern, line):
-                    is_product_line = True
-                    break
-            
-            if is_product_line:
-                # ノイズ行を除外
-                noise_patterns = [
-                    '発送予定', 'キャンペーン', 'ポイント', '買い取り', '下取り', 
-                    'ログイン', 'クレジット', '分割', '無金利', '送料', '在庫', 
-                    '入荷', '予約', '検索', 'カテゴリ', 'メニュー', 'ナビ'
-                ]
+            for row in rows:
+                cells = row.find_all(['td', 'th'])
                 
-                if not any(noise in line for noise in noise_patterns):
-                    product_candidates.append((i, line))
+                if len(cells) >= 2:
+                    # 商品名候補を検索
+                    product_name = None
+                    price = None
+                    product_url = base_url
+                    
+                    for cell in cells:
+                        cell_text = cell.get_text(strip=True)
+                        
+                        # 商品名の判定ロジックを改善
+                        if self.is_likely_jguitar_product_name(cell_text):
+                            product_name = cell_text
+                            
+                            # 同じセルまたは近くのセルで価格を探す
+                            price = self.find_price_in_cell_or_nearby(cell, row)
+                            
+                            # リンクを探す
+                            link = cell.find('a', href=True)
+                            if link:
+                                product_url = urljoin(base_url, link['href'])
+                            
+                            break
+                    
+                    # 価格が見つからない場合、行全体で再検索
+                    if product_name and not price:
+                        for cell in cells:
+                            price = self.extract_price_from_text(cell.get_text())
+                            if price:
+                                break
+                    
+                    # 商品として有効かチェック
+                    if product_name and price:
+                        product = self.create_product_info(
+                            store='jguitar',
+                            name=product_name,
+                            price=price,
+                            link=product_url,
+                            store_name='J-Guitar'
+                        )
+                        
+                        if self.is_valid_product(product):
+                            products.append(product)
         
-        # 商品候補と価格の組み合わせを試行
-        for line_num, product_name in product_candidates:
-            # この商品候補の前後10行で価格を探索
-            found_price = None
-            
-            for price_line_num, price in price_lines.items():
-                if abs(price_line_num - line_num) <= 10:
-                    found_price = price
-                    break
-            
-            # 価格が見つからない場合はスキップ
-            if not found_price:
-                continue
-            
-            product = self.create_product_info(
-                store='jguitar',
-                name=product_name,
-                price=found_price,
-                link=base_url,
-                store_name='J-Guitar'
-            )
-            
-            if self.is_valid_product(product):
-                products.append(product)
+        # テーブル以外の構造も解析
+        if len(products) < 5:
+            products.extend(self.parse_jguitar_alternative_structure(soup, base_url))
         
         # 重複除去
         seen_names = set()
@@ -506,6 +471,104 @@ class PriceRequiredMultiStoreMusicMonitor:
                 unique_products.append(product)
         
         return unique_products[:15]  # 最大15件に制限
+    
+    def is_likely_jguitar_product_name(self, text):
+        """J-Guitarの商品名らしいテキストかを判定"""
+        if not text or len(text) < 10:
+            return False
+        
+        # ノイズテキストを除外
+        noise_patterns = [
+            '詳細', 'detail', '価格', 'price', '在庫', 'stock', '送料', 'shipping',
+            'ログイン', 'login', 'メニュー', 'menu', 'カート', 'cart', '検索', 'search',
+            '年', '月', '日', 'お問い合わせ', 'contact', 'ページ', 'page'
+        ]
+        
+        text_lower = text.lower()
+        if any(noise in text_lower for noise in noise_patterns):
+            return False
+        
+        # 商品名らしい特徴
+        positive_indicators = [
+            # ブランド名
+            'yamaha', 'gibson', 'fender', 'martin', 'taylor', 'ibanez',
+            'ramirez', 'hernandez', 'cordoba', 'godin', 'alhambra',
+            '河野', '桜井', '黒澤', '中村', 'kohno', 'sakurai',
+            
+            # ギター関連用語
+            'classical', 'flamenco', 'guitar', 'ギター', 'クラシック', 'フラメンコ',
+            'nylon', 'ナイロン', 'cedar', 'spruce', 'rosewood', 'ebony',
+            'セダー', 'スプルース', 'ローズウッド', 'エボニー',
+            
+            # 年代・モデル
+            '19', '20', 'model', 'no.', '#', 'vintage', 'ヴィンテージ',
+            
+            # サイズ・仕様
+            '650mm', '640mm', '630mm', 'scale', 'top', 'back', 'side'
+        ]
+        
+        has_positive = any(indicator in text_lower for indicator in positive_indicators)
+        
+        # 長さとアルファベット・数字の組み合わせをチェック
+        has_good_length = 10 <= len(text) <= 150
+        has_alphanumeric = bool(re.search(r'[a-zA-Z]', text)) and bool(re.search(r'[\d]', text))
+        
+        return has_positive and has_good_length
+    
+    def find_price_in_cell_or_nearby(self, cell, row):
+        """セルまたは近くのセルで価格を検索"""
+        # 同じセル内を先に検索
+        price = self.extract_price_from_text(cell.get_text())
+        if price:
+            return price
+        
+        # 同じ行の他のセルを検索
+        cells = row.find_all(['td', 'th'])
+        for other_cell in cells:
+            price = self.extract_price_from_text(other_cell.get_text())
+            if price:
+                return price
+        
+        return None
+    
+    def parse_jguitar_alternative_structure(self, soup, base_url):
+        """J-Guitarの代替構造解析"""
+        products = []
+        
+        # div要素での商品情報検索
+        divs = soup.find_all('div', class_=True)
+        
+        for div in divs:
+            text = div.get_text(strip=True)
+            
+            if self.is_likely_jguitar_product_name(text):
+                # 価格を周辺で検索
+                price = None
+                
+                # 親要素や兄弟要素で価格を検索
+                parent = div.parent
+                if parent:
+                    price = self.extract_price_from_text(parent.get_text())
+                
+                if not price:
+                    # 次の兄弟要素を検索
+                    next_sibling = div.find_next_sibling()
+                    if next_sibling:
+                        price = self.extract_price_from_text(next_sibling.get_text())
+                
+                if price:
+                    product = self.create_product_info(
+                        store='jguitar',
+                        name=text,
+                        price=price,
+                        link=base_url,
+                        store_name='J-Guitar'
+                    )
+                    
+                    if self.is_valid_product(product):
+                        products.append(product)
+        
+        return products
     
     def is_ikebe_product_link(self, href, text):
         """イケベ楽器店の商品リンク判定"""
@@ -550,17 +613,21 @@ class PriceRequiredMultiStoreMusicMonitor:
     def extract_price_from_text(self, text):
         """テキストから価格を抽出"""
         price_patterns = [
-            r'¥([\d,]+)',
+            r'¥([^\s]+)',
             r'(\d{1,3}(?:,\d{3})+)円',
-            r'価格[：:]?\s*¥?([\d,]+)',
+            r'価格[：:]?\s*¥?([^\s]+)',
             r'(\d{1,3}(?:,\d{3})+)(?=\s*\(税込\))',
-            r'￥([\d,]+)',
+            r'￥([^\s]+)',
         ]
         
         for pattern in price_patterns:
             match = re.search(pattern, text)
             if match:
-                return f"¥{match.group(1)}"
+                price_str = match.group(1).replace(',', '')
+                # 数字以外の文字を除去
+                clean_price = re.sub(r'[^\d]', '', price_str)
+                if clean_price and clean_price.isdigit():
+                    return f"¥{int(clean_price):,}"
         return None
     
     def create_product_info(self, store, name, price, link, store_name):
@@ -669,8 +736,34 @@ class PriceRequiredMultiStoreMusicMonitor:
         
         return all_new_products
     
+    def filter_high_value_products(self, all_new_products):
+        """10万円以上の商品のみをフィルタリング"""
+        filtered_products = {}
+        
+        for store_key, products in all_new_products.items():
+            high_value_products = [p for p in products if self.is_high_value_product(p)]
+            if high_value_products:
+                filtered_products[store_key] = high_value_products
+        
+        return filtered_products
+    
+    def detect_special_keywords(self, all_new_products):
+        """特別なキーワードを検出"""
+        special_products = []
+        
+        for store_key, products in all_new_products.items():
+            for product in products:
+                if self.has_special_keywords(product['name']):
+                    special_products.append({
+                        'store': self.stores[store_key]['name'],
+                        'name': product['name'],
+                        'price': product['price']
+                    })
+        
+        return special_products
+    
     def send_email(self, all_new_products):
-        """新商品をメールで通知"""
+        """新商品をメールで通知（10万円以上＆キーワード検出機能付き）"""
         try:
             email_config = self.config['email']
             
@@ -678,35 +771,60 @@ class PriceRequiredMultiStoreMusicMonitor:
                 self.logger.error("❌ メール設定が不完全です")
                 return
             
-            total_new = sum(len(products) for products in all_new_products.values())
+            # 10万円以上の商品のみをフィルタリング
+            filtered_products = self.filter_high_value_products(all_new_products)
+            total_new = sum(len(products) for products in filtered_products.values())
             
             if total_new == 0:
-                self.logger.info("📧 新商品がないため、メール送信をスキップ")
+                self.logger.info("📧 10万円以上の新商品がないため、メール送信をスキップ")
                 return
             
-            subject = f"🎸 新商品が{total_new}件見つかりました - 5サイト統合監視（週1回・価格付きのみ） [GitHub Actions]"
+            # 特別なキーワードの検出
+            special_keyword_products = self.detect_special_keywords(filtered_products)
             
-            body = f"5つの楽器店サイトで新商品 {total_new}件を検出しました！\n"
-            body += f"（価格情報が取得できた商品のみ）\n\n"
+            subject = f"🎸 高価格新商品が{total_new}件見つかりました - 5サイト統合監視（毎日・10万円以上のみ） [GitHub Actions]"
+            
+            body = ""
+            
+            # 特別なキーワードが検出された場合は冒頭に記載
+            if special_keyword_products:
+                body += "🌟" * 50 + "\n"
+                body += "🔥 【特別注目商品】ダブルトップ・ラティス構造の商品を発見！ 🔥\n"
+                body += "🌟" * 50 + "\n\n"
+                
+                for special in special_keyword_products:
+                    body += f"🏪 {special['store']}: {special['name']} ({special['price']})\n"
+                
+                body += "\n" + "=" * 60 + "\n\n"
+            
+            body += f"5つの楽器店サイトで高価格新商品 {total_new}件を検出しました！\n"
+            body += f"（10万円以上の商品のみ・価格情報付き）\n\n"
             body += "=" * 60 + "\n\n"
             
-            for store_key, new_products in all_new_products.items():
+            for store_key, new_products in filtered_products.items():
                 store_name = self.stores[store_key]['name']
                 body += f"🏪 【{store_name}】 新商品 {len(new_products)}件\n"
                 body += "-" * 40 + "\n\n"
                 
                 for i, product in enumerate(new_products, 1):
+                    price_value = self.extract_price_value(product['price'])
                     body += f"{i}. 📦 {product['name']}\n"
-                    body += f"   💰 {product['price']}\n"
+                    body += f"   💰 {product['price']} (¥{price_value:,})\n"
+                    
+                    # 特別なキーワードがある場合は強調
+                    if self.has_special_keywords(product['name']):
+                        body += f"   🌟 ダブルトップ/ラティス構造商品\n"
+                    
                     body += f"   🔗 {product['link']}\n\n"
                 
                 body += "\n"
             
             body += "=" * 60 + "\n"
             body += f"実行時刻: {datetime.now().strftime('%Y年%m月%d日 %H:%M:%S')} (UTC)\n"
-            body += f"実行環境: GitHub Actions 5サイト統合監視（週1回・価格付き商品のみ・改良版）\n"
+            body += f"実行環境: GitHub Actions 5サイト統合監視（毎日・10万円以上・改良版）\n"
             body += f"対象サイト: イケベ楽器店、黒澤楽器店、島村楽器、QSic、J-Guitar\n"
-            body += f"実行頻度: 毎週土曜日 日本時間9:00"
+            body += f"実行頻度: 毎日 日本時間8:00\n"
+            body += f"価格制限: 10万円以上のみ通知"
             
             msg = MIMEMultipart()
             msg['From'] = email_config['sender_email']
@@ -720,14 +838,17 @@ class PriceRequiredMultiStoreMusicMonitor:
                 server.login(email_config['sender_email'], email_config['sender_password'])
                 server.send_message(msg)
             
-            self.logger.info(f"📧 メール送信完了: {total_new}件の新商品（5サイト統合・改良版）")
+            self.logger.info(f"📧 メール送信完了: {total_new}件の高価格新商品（10万円以上・改良版）")
+            
+            if special_keyword_products:
+                self.logger.info(f"🌟 特別キーワード商品: {len(special_keyword_products)}件")
             
         except Exception as e:
             self.logger.error(f"メール送信エラー: {e}")
     
     def check_for_updates(self):
         """全サイトの商品更新をチェック"""
-        self.logger.info("🔍 5サイト統合商品チェック開始（価格必須版・改良版）")
+        self.logger.info("🔍 5サイト統合商品チェック開始（毎日・10万円以上・改良版）")
         
         current_products = self.get_all_products()
         
@@ -742,23 +863,34 @@ class PriceRequiredMultiStoreMusicMonitor:
             total_new = sum(len(products) for products in all_new_products.values())
             self.logger.info(f"🎉 5サイト合計で新商品を{total_new}件発見（価格付き）")
             
+            # 10万円以上の商品のみをカウント
+            filtered_products = self.filter_high_value_products(all_new_products)
+            total_high_value = sum(len(products) for products in filtered_products.values())
+            
+            self.logger.info(f"💰 うち10万円以上の商品: {total_high_value}件")
+            
             for store_key, new_products in all_new_products.items():
                 store_name = self.stores[store_key]['name']
-                self.logger.info(f"  ➡️ {store_name}: {len(new_products)}件")
+                high_value_count = len([p for p in new_products if self.is_high_value_product(p)])
+                self.logger.info(f"  ➡️ {store_name}: {len(new_products)}件 (10万円以上: {high_value_count}件)")
+                
                 for product in new_products[:3]:
-                    self.logger.info(f"     - {product['name'][:50]}... ({product['price']})")
+                    price_value = self.extract_price_value(product['price'])
+                    emoji = "💰" if price_value >= 100000 else "💴"
+                    self.logger.info(f"     {emoji} {product['name'][:50]}... ({product['price']})")
             
             self.send_email(all_new_products)
         else:
             self.logger.info("ℹ️ 5サイト全体で新商品はありませんでした")
         
         self.save_data(current_products)
-        self.logger.info("✅ 5サイト統合商品チェック完了（価格必須版・改良版）")
+        self.logger.info("✅ 5サイト統合商品チェック完了（毎日・10万円以上・改良版）")
         
         if os.getenv('GITHUB_ACTIONS'):
             total_current = sum(len(products) for products in current_products.values())
             total_new = sum(len(products) for products in all_new_products.values()) if all_new_products else 0
-            print(f"::notice title=5サイト統合監視完了（改良版）::総商品数: {total_current}, 新商品: {total_new}")
+            total_high_value = sum(len(products) for products in self.filter_high_value_products(all_new_products).values()) if all_new_products else 0
+            print(f"::notice title=5サイト統合監視完了（改良版）::総商品数: {total_current}, 新商品: {total_new}, 10万円以上: {total_high_value}")
 
 def main():
     """メイン実行関数"""
@@ -771,7 +903,7 @@ def main():
         print("✅ 監視システム初期化完了")
         
         monitor.check_for_updates()
-        print("🎯 5サイト統合監視処理が正常に完了しました（価格必須版・改良版）")
+        print("🎯 5サイト統合監視処理が正常に完了しました（毎日・10万円以上・改良版）")
         
     except Exception as e:
         import traceback
