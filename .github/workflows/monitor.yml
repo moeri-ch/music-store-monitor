@@ -1,9 +1,9 @@
-name: 🎸 Multi-Store Music Monitor (Daily)
+name: 🎸 Multi-Store Music Monitor (Manual)
 
 on:
-  schedule:
-    # 毎日 日本時間8:00 (UTC 23:00) に実行
-    - cron: '0 23 * * *'
+  # schedule:
+  #   # 毎日 日本時間8:00 (UTC 23:00) に実行
+  #   - cron: '0 23 * * *'
   workflow_dispatch:  # 手動実行を可能にする
 
 jobs:
@@ -86,7 +86,7 @@ jobs:
         echo "## 🎸 Multi-Store Monitor Results" >> $GITHUB_STEP_SUMMARY
         echo "実行時刻: $(date '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
         echo "実行環境: GitHub Actions" >> $GITHUB_STEP_SUMMARY
-        echo "実行頻度: 毎日 日本時間8:00" >> $GITHUB_STEP_SUMMARY
+        echo "実行頻度: 手動実行のみ" >> $GITHUB_STEP_SUMMARY
         echo "対象サイト: イケベ楽器店、黒澤楽器店、島村楽器、QSic、J-Guitar" >> $GITHUB_STEP_SUMMARY
         echo "価格制限: 10万円以上のみ通知" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
